@@ -2,10 +2,11 @@
  * 베네피온 도난방지 슬링백 랜딩 페이지 스크립트
  * 기능:
  * 1. 쿠팡 파트너스 다이렉트 링크 아웃바운드 지원
- * 2. Before / After 이미지 대조 인터랙티브 슬라이더 (포인터 드래그 & 자동 시각 안내 모션)
- * 3. FAQ 아코디언 접근성 및 단일 오픈 모드
- * 4. 헤더 IntersectionObserver 스크롤 최적화
- * 5. 스크롤 넛지 및 내부 앵커 부드러운 스크롤
+ * 2. GA4 구간 도달(section_view) 및 CTA 클릭(cta_click) 측정
+ * 3. Before / After 이미지 대조 인터랙티브 슬라이더 (포인터 드래그 & 자동 시각 안내 모션)
+ * 4. FAQ 아코디언 접근성 및 단일 오픈 모드
+ * 5. 헤더 IntersectionObserver 스크롤 최적화
+ * 6. 스크롤 넛지 및 내부 앵커 부드러운 스크롤
  */
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -44,17 +45,143 @@ document.addEventListener('DOMContentLoaded', () => {
     }, { passive: true });
   }
 
-  // 2. CTA 버튼 클릭 처리 (쿠팡 파트너스 제휴 링크 연결)
-  const ctaButtons = document.querySelectorAll('.cta-btn');
+  // 2. GA4 측정: 구간 도달(section_view) 및 CTA 클릭(cta_click)
+  function initGA4Tracking() {
+    if (window.__ga4TrackingInitialized) return;
+    window.__ga4TrackingInitialized = true;
 
-  ctaButtons.forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const location = btn.getAttribute('data-cta-location') || 'unknown';
-      if (window.console && console.debug) {
-        console.debug(`[CTA Clicked] Location: ${location}`);
+    // GA4 이벤트 안전 전송 헬퍼
+    function sendGAEvent(eventName, params) {
+      if (typeof window.gtag === 'function') {
+        window.gtag('event', eventName, params);
       }
+    }
+
+    // [CTA 클릭 측정: cta_click]
+    const ctaTargets = [
+      { selector: '#cta-hero, [data-cta-location="hero"]', location: 'hero' },
+      { selector: '#cta-final, [data-cta-location="final"]', location: 'final' }
+    ];
+
+    const boundCtaElements = new Set();
+
+    ctaTargets.forEach(({ selector, location }) => {
+      const elements = document.querySelectorAll(selector);
+      elements.forEach((el) => {
+        if (!el || boundCtaElements.has(el)) return;
+        boundCtaElements.add(el);
+
+        // 일반 클릭 및 키보드 Enter 활성화 시 네이티브 click 이벤트 1회 발생
+        el.addEventListener('click', () => {
+          sendGAEvent('cta_click', {
+            button_location: location
+          });
+        });
+      });
     });
-  });
+
+    // [구간 도달 측정: section_view]
+    const sectionTargets = [
+      {
+        name: 'hero',
+        element: document.getElementById('hero-title')
+      },
+      {
+        name: 'detail',
+        element: document.getElementById('detail-guide-title') || document.getElementById('detail-space-title')
+      },
+      {
+        name: 'cta',
+        element: document.getElementById('cta-final-title') || document.getElementById('purchase-title')
+      }
+    ];
+
+    const sentSections = new Set();
+    const activeTargets = sectionTargets.filter((item) => item.element !== null);
+
+    if (activeTargets.length === 0) return;
+
+    // 고정 헤더 높이 제외 계산
+    const headerEl = document.getElementById('site-header');
+    const headerHeight = headerEl ? Math.ceil(headerEl.getBoundingClientRect().height) : 64;
+    const rootMarginTop = -Math.max(headerHeight, 0);
+
+    // 가시 영역 내 50% 이상 노출 비율 계산 (탭 복귀 시 가시성 검사용)
+    function checkElementVisibilityRatio(el) {
+      if (!el) return 0;
+      const rect = el.getBoundingClientRect();
+      const elArea = rect.width * rect.height;
+      if (elArea <= 0) return 0;
+
+      const viewportTop = -rootMarginTop;
+      const viewportBottom = window.innerHeight || document.documentElement.clientHeight;
+      const viewportLeft = 0;
+      const viewportRight = window.innerWidth || document.documentElement.clientWidth;
+
+      const visibleTop = Math.max(rect.top, viewportTop);
+      const visibleBottom = Math.min(rect.bottom, viewportBottom);
+      const visibleLeft = Math.max(rect.left, viewportLeft);
+      const visibleRight = Math.min(rect.right, viewportRight);
+
+      if (visibleBottom > visibleTop && visibleRight > visibleLeft) {
+        const visibleArea = (visibleBottom - visibleTop) * (visibleRight - visibleLeft);
+        return visibleArea / elArea;
+      }
+      return 0;
+    }
+
+    function sendSectionView(name, el, observer) {
+      if (sentSections.has(name)) return;
+      if (document.visibilityState !== 'visible') return;
+
+      sentSections.add(name);
+      if (observer && el) {
+        observer.unobserve(el);
+      }
+      sendGAEvent('section_view', {
+        section_name: name
+      });
+    }
+
+    let sectionObserver = null;
+
+    if ('IntersectionObserver' in window) {
+      sectionObserver = new IntersectionObserver((entries, obs) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting || entry.intersectionRatio < 0.5) return;
+
+          const matched = activeTargets.find((item) => item.element === entry.target);
+          if (matched && !sentSections.has(matched.name)) {
+            sendSectionView(matched.name, matched.element, obs);
+          }
+        });
+      }, {
+        root: null,
+        rootMargin: `${rootMarginTop}px 0px 0px 0px`,
+        threshold: 0.5
+      });
+
+      activeTargets.forEach((item) => {
+        sectionObserver.observe(item.element);
+      });
+    }
+
+    // 다른 탭에서 돌아왔을 때 현재 화면에 50% 이상 보이는 미전송 제목 감지
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState !== 'visible') return;
+
+      activeTargets.forEach((item) => {
+        if (sentSections.has(item.name)) return;
+
+        const ratio = checkElementVisibilityRatio(item.element);
+        if (ratio >= 0.5) {
+          sendSectionView(item.name, item.element, sectionObserver);
+        }
+      });
+    });
+  }
+
+  initGA4Tracking();
 
   // 3. Before / After 이미지 대조 비교 인터랙티브 슬라이더 모션
   const compareSlider = document.getElementById('compare-slider');
